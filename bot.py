@@ -150,13 +150,57 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_providers[chat_id] = "groq"
         await query.edit_message_text("Switched to Groq (Llama 3.3).")
 
+async def terminal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    name = update.effective_user.first_name or "Lakshan"
+    provider = get_provider(update.effective_chat.id)
+    terminal_output = (
+        "```\n"
+        "Initializing Neural Link...\n"
+        f"User: {name}@jarvis-core\n"
+        "Status: VERIFIED\n"
+        "---------------------------------\n"
+        f"Engine:    {provider.upper()}\n"
+        "Latency:   24ms\n"
+        "Uptime:    99.98%\n"
+        "Memory:    Optimized\n"
+        "---------------------------------\n"
+        "System ready. Awaiting input...\n"
+        "```"
+    )
+    await update.message.reply_text(terminal_output, parse_mode="MarkdownV2")
+
+async def brief_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    date = datetime.now().strftime("%A, %b %d")
+    provider = get_provider(update.effective_chat.id)
+    await update.message.reply_text(
+        f"📅 *Briefing: {date}*\n\n"
+        f"• *Status:* All systems green\n"
+        f"• *Core:* {provider.capitalize()}\n"
+        f"• *Inbox:* 0 pending alerts\n\n"
+        "How can I assist your workflow, Lakshan?",
+        parse_mode="Markdown",
+    )
+
+async def code_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    import random
+    challenges = [
+        "Challenge: Write a one-liner to reverse a string in Python.",
+        "Challenge: What is the time complexity of a binary search?",
+        "Challenge: Fix this: `if (x = 5) { ... }`",
+        "Challenge: Explain 'Hoisting' in JavaScript in 10 words.",
+    ]
+    await update.message.reply_text(f"🚀 *Coding Challenge:*\n\n{random.choice(challenges)}", parse_mode="Markdown")
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Commands:\n\n"
-        "/start - Reset\n"
-        "/model - Change engine\n"
+        "Available Protocols:\n\n"
+        "/start - Reset system\n"
+        "/model - Switch core engine\n"
+        "/brief - Mission briefing\n"
+        "/terminal - System shell\n"
+        "/code - Random challenge\n"
         "/clear - Wipe memory\n"
-        "/help  - This list",
+        "/help  - Help guide",
         parse_mode="Markdown",
     )
 
@@ -196,6 +240,9 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("model", model_command))
+    app.add_handler(CommandHandler("brief", brief_command))
+    app.add_handler(CommandHandler("terminal", terminal_command))
+    app.add_handler(CommandHandler("code", code_command))
     app.add_handler(CommandHandler("help",  help_command))
     app.add_handler(CommandHandler("clear", clear))
     app.add_handler(CallbackQueryHandler(button_callback))
