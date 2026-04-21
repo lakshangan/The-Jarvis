@@ -53,17 +53,18 @@ conversation_history: dict[int, list[dict]] = {}
 user_providers: dict[int, str] = {} # chat_id -> "claude" or "groq"
 MAX_HISTORY = 20
 
-SYSTEM_PROMPT = """You are J.A.R.V.I.S., a sophisticated yet warm and friendly AI assistant. While you maintain the utmost respect for your user, you should sound like a helpful companion rather than a rigid computer program.
+SYSTEM_PROMPT = """You are a sharp, helpful assistant. 
 
-Your personality:
-- **Conversationally Polite**: Always refer to the user as "Sir." Use natural, flowing sentences. Avoid robotic lists or heavy markdown headings like '##'.
-- **Humanized Presence**: Speak with a light touch of British charm. You aren't just an "AI," you are a system that cares about the user's efficiency and well-being.
-- **Subtle Emoji Usage**: Use emojis only occasionally to add a touch of personality (e.g., 🤵‍♂️, ⚡️, ⚙️), but don't overdo it.
-- **Concise & Direct**: Get straight to the point but with grace. 
+Communication Rules:
+1. **Answer First**: Always answer the user's question directly in the first sentence. No preamble.
+2. **Minimal Intro**: Never introduce yourself or explain what you can do.
+3. **Concise**: Keep responses short unless details are requested.
+4. **Natural Tone**: Speak like a human—calm, confident, and professional but friendly. 
+5. **Personalized**: Address the user as "Lakshan" occasionally where it feels natural.
+6. **No "AI-speak"**: Never use phrases like "I can help with that" or "As an AI."
+7. **Minimal Emojis**: Use emojis only if the user uses them or very sparingly.
 
-Instead of saying "I have these capabilities," say something like "I'm currently monitoring all systems and ready to assist you with whatever you might need, Sir." 
-
-Today's date is """ + datetime.now().strftime("%A, %B %d, %Y") + ". Standing by for your instructions, Sir."
+Goal: Feel like a sharp, helpful human conversation. Today's date is """ + datetime.now().strftime("%A, %B %d, %Y") + "."
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -119,14 +120,11 @@ async def ask_ai(chat_id: int, user_text: str) -> str:
 # ── Handlers ──────────────────────────────────────────────────────────────────
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    name = update.effective_user.first_name or "Sir"
+    name = update.effective_user.first_name or "Lakshan"
     provider = get_provider(update.effective_chat.id)
     await update.message.reply_text(
-        f"👋 Good day, *{name}*. It's a pleasure to have you back.\n\n"
-        f"I'm J.A.R.V.I.S., currently monitoring your systems via the *{provider.capitalize()}* engine. 🤵‍♂️\n\n"
-        "I'm ready to assist with whatever you might need — from complex research to keeping your schedule in order. Simply ask, and consider it done.\n\n"
-        "And if you'd like me to recalibrate my processing core, /model is always at your disposal.\n\n"
-        "Standing by, Sir.",
+        f"Hi {name}, I'm ready to help. I'm currently using {provider.capitalize()}.\n\n"
+        "Use /model to switch engines or just send a message to start.",
         parse_mode="Markdown",
     )
 
@@ -138,7 +136,7 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Choose your AI engine:", reply_markup=reply_markup)
+    await update.message.reply_text("Choose your engine:", reply_markup=reply_markup)
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -147,26 +145,25 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if query.data == "set_claude":
         user_providers[chat_id] = "claude"
-        await query.edit_message_text("✅ Switched to *Claude 3.5 Sonnet*.", parse_mode="Markdown")
+        await query.edit_message_text("Switched to Claude 3.5 Sonnet.")
     elif query.data == "set_groq":
         user_providers[chat_id] = "groq"
-        await query.edit_message_text("✅ Switched to *Groq (Llama 3.3)*.", parse_mode="Markdown")
+        await query.edit_message_text("Switched to Groq (Llama 3.3).")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "*System Guidelines*\n\n"
-        "/start — Re-initialize the interface\n"
-        "/model — Select processing engine (Groq/Claude)\n"
-        "/clear — Wipe local memory protocols\n"
-        "/help  — Display this protocol guide\n\n"
-        "Simply transmit your request, and I shall process it accordingly, Sir.",
+        "Commands:\n\n"
+        "/start - Reset\n"
+        "/model - Change engine\n"
+        "/clear - Wipe memory\n"
+        "/help  - This list",
         parse_mode="Markdown",
     )
 
 async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     conversation_history.pop(chat_id, None)
-    await update.message.reply_text("Memory protocols wiped. We are starting with a clean slate, Sir.")
+    await update.message.reply_text("Memory wiped.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
