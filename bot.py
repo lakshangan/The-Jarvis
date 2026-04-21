@@ -13,9 +13,24 @@ from telegram.ext import (
 )
 from datetime import datetime
 from dotenv import load_dotenv
+from aiohttp import web
 
 # Load environment variables
 load_dotenv()
+
+# ── Health Check Server ───────────────────────────────────────────────────────
+async def health_check(request):
+    return web.Response(text="J.A.R.V.I.S. is logged in and monitoring systems, Sir. 🤵‍♂️")
+
+async def start_health_server():
+    app = web.Application()
+    app.router.add_get("/", health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logger.info(f"Health server active on port {port}")
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -170,13 +185,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
+async def post_init(application: Application):
+    # Start the health check server in the background
+    await start_health_server()
+
 def main():
     if not TELEGRAM_TOKEN:
         logger.error("TELEGRAM_BOT_TOKEN not found in environment!")
         return
 
     logger.info("Starting Telegram AI Agent…")
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("model", model_command))
