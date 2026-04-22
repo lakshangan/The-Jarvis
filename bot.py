@@ -13,7 +13,12 @@ from telegram.ext import (
 )
 from datetime import datetime
 from dotenv import load_dotenv
-from aiohttp import web
+try:
+    from aiohttp import web
+    HAS_AIOHTTP = True
+except ImportError:
+    HAS_AIOHTTP = False
+
 
 # Load environment variables
 load_dotenv()
@@ -23,6 +28,9 @@ async def health_check(request):
     return web.Response(text="J.A.R.V.I.S. is logged in and monitoring systems, Sir. 🤵‍♂️")
 
 async def start_health_server():
+    if not HAS_AIOHTTP:
+        logger.warning("aiohttp not installed. Health check server will not be started.")
+        return
     app = web.Application()
     app.router.add_get("/", health_check)
     runner = web.AppRunner(app)
@@ -43,6 +51,8 @@ logger = logging.getLogger(__name__)
 TELEGRAM_TOKEN  = os.environ.get("TELEGRAM_BOT_TOKEN")
 ANTHROPIC_KEY   = os.environ.get("ANTHROPIC_API_KEY")
 GROQ_KEY        = os.environ.get("GROQ_API_KEY")
+ADMIN_CHAT_ID   = os.environ.get("ADMIN_CHAT_ID") # Add this to .env to receive alerts
+
 
 # Clients
 claude = anthropic.Anthropic(api_key=ANTHROPIC_KEY) if ANTHROPIC_KEY else None
@@ -76,6 +86,14 @@ def add_to_history(chat_id: int, role: str, content: str):
     history.append({"role": role, "content": content})
     if len(history) > MAX_HISTORY:
         conversation_history[chat_id] = history[-MAX_HISTORY:]
+
+async def notify_admin(context: ContextTypes.DEFAULT_TYPE, message: str):
+    """Sends a notification to the admin chat ID."""
+    if ADMIN_CHAT_ID:
+        try:
+            await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"🚨 *SYSTEM ALERT*\n\n{message}", parse_mode="Markdown")
+        except Exception as e:
+            logger.error(f"Failed to notify admin: {e}")
 
 def get_provider(chat_id: int) -> str:
     # Default to Groq if key is available, otherwise Claude
@@ -113,6 +131,12 @@ async def ask_ai(chat_id: int, user_text: str) -> str:
             
         add_to_history(chat_id, "assistant", reply)
         return reply
+    except (groq.RateLimitError, anthropic.RateLimitError) as e:
+        error_msg = f"Token limit reached or Rate limited on {provider.capitalize()}: {e}"
+        logger.warning(error_msg)
+        # We can't easily notify admin here without 'context', but we can return it.
+        # Alternatively, we'll let the error handler or the message handler handle it.
+        return f"⚠️ Token/Rate limit reached for {provider.capitalize()}. I've notified the admin."
     except Exception as e:
         logger.error(f"API error ({provider}): {e}")
         return f"⚠️ Sorry, I hit an error with {provider.capitalize()}. Please try again or switch providers."
@@ -217,12 +241,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
     reply = await ask_ai(chat_id, user_text)
 
-    # Split long messages
-    if len(reply) <= 4096:
-        await update.message.reply_text(reply, parse_mode="Markdown")
-    else:
-        for i in range(0, len(reply), 4096):
-            await update.message.reply_text(reply[i:i+4096], parse_mode="Markdown")
+    # Check if we should notify admin (if token limit error occurred)
+    if "Token/Rate limit reached" in reply:
+        await notify_admin(context, f"User {update.effective_user.first_name} ({chat_id}) encountered a rate limit.")
+
+    # Split long messages and handle Markdown errors
+    chunks = [reply[i:i+4096] for i in range(0, len(reply), 4096)]
+    for chunk in chunks:
+        try:
+            await update.message.reply_text(chunk, parse_mode="Markdown")
+        except Exception as e:
+            logger.error(f"Markdown error (falling back to plain text): {e}")
+            await update.message.reply_text(chunk)
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log the error and send a telegram message to notify the developer."""
+    logger.error(f"Root Exception: {context.error}")
+    
+    # Notify admin about the crash/error
+    await notify_admin(context, f"An uncaught exception occurred:\n`{context.error}`")
+    
+    # Notify user if possible
+    if isinstance(update, Update) and update.effective_message:
+        await update.effective_message.reply_text(
+            "⚠️ An internal system error occurred. Operations have been logged and the admin has been notified."
+        )
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
@@ -247,6 +290,9 @@ def main():
     app.add_handler(CommandHandler("clear", clear))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    # Global error handler
+    app.add_error_handler(error_handler)
 
     logger.info("Bot is polling…")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
