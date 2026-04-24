@@ -1,5 +1,6 @@
 import os
 import logging
+import random
 import anthropic
 import groq
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -51,12 +52,15 @@ logger = logging.getLogger(__name__)
 TELEGRAM_TOKEN  = os.environ.get("TELEGRAM_BOT_TOKEN")
 ANTHROPIC_KEY   = os.environ.get("ANTHROPIC_API_KEY")
 GROQ_KEY        = os.environ.get("GROQ_API_KEY")
-ADMIN_CHAT_ID   = os.environ.get("ADMIN_CHAT_ID") # Add this to .env to receive alerts
+ADMIN_CHAT_ID   = os.environ.get("ADMIN_CHAT_ID", "").strip()
+if ADMIN_CHAT_ID and not ADMIN_CHAT_ID.lstrip("-").isdigit():
+    logger.warning("ADMIN_CHAT_ID is not a valid integer. Alerts will be disabled.")
+    ADMIN_CHAT_ID = None
 
 
 # Clients
-claude = anthropic.Anthropic(api_key=ANTHROPIC_KEY) if ANTHROPIC_KEY else None
-groq_client = groq.Groq(api_key=GROQ_KEY) if GROQ_KEY else None
+claude = anthropic.AsyncAnthropic(api_key=ANTHROPIC_KEY) if ANTHROPIC_KEY else None
+groq_client = groq.AsyncGroq(api_key=GROQ_KEY) if GROQ_KEY else None
 
 # In-memory session state
 conversation_history: dict[int, list[dict]] = {}
@@ -98,12 +102,12 @@ async def notify_admin(context: ContextTypes.DEFAULT_TYPE, message: str):
 def get_provider(chat_id: int) -> str:
     # Default to Groq if key is available, otherwise Claude
     if chat_id not in user_providers:
-        if GROQ_KEY:
+        if GROQ_KEY and GROQ_KEY.startswith("gsk_"):
             user_providers[chat_id] = "groq"
-        elif ANTHROPIC_KEY:
+        elif ANTHROPIC_KEY and ANTHROPIC_KEY.startswith("sk-"):
             user_providers[chat_id] = "claude"
         else:
-            user_providers[chat_id] = "unknown"
+            user_providers[chat_id] = "groq" if GROQ_KEY else ("claude" if ANTHROPIC_KEY else "unknown")
     return user_providers[chat_id]
 
 async def ask_ai(chat_id: int, user_text: str) -> str:
@@ -113,7 +117,7 @@ async def ask_ai(chat_id: int, user_text: str) -> str:
     try:
         if provider == "groq":
             if not groq_client: return "⚠️ Groq API key not configured."
-            response = groq_client.chat.completions.create(
+            response = await groq_client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
                 messages=[{"role": "system", "content": SYSTEM_PROMPT}] + get_history(chat_id),
                 max_tokens=2048,
@@ -121,7 +125,7 @@ async def ask_ai(chat_id: int, user_text: str) -> str:
             reply = response.choices[0].message.content
         else:
             if not claude: return "⚠️ Claude API key not configured."
-            response = claude.messages.create(
+            response = await claude.messages.create(
                 model="claude-3-5-sonnet-20241022",
                 max_tokens=1024,
                 system=SYSTEM_PROMPT,
@@ -132,25 +136,29 @@ async def ask_ai(chat_id: int, user_text: str) -> str:
         add_to_history(chat_id, "assistant", reply)
         return reply
     except (groq.RateLimitError, anthropic.RateLimitError) as e:
-        error_msg = f"Token limit reached or Rate limited on {provider.capitalize()}: {e}"
-        logger.warning(error_msg)
-        # We can't easily notify admin here without 'context', but we can return it.
-        # Alternatively, we'll let the error handler or the message handler handle it.
+        logger.warning(f"Rate limited on {provider}: {e}")
         return f"⚠️ Token/Rate limit reached for {provider.capitalize()}. I've notified the admin."
     except Exception as e:
         logger.error(f"API error ({provider}): {e}")
-        return f"⚠️ Sorry, I hit an error with {provider.capitalize()}. Please try again or switch providers."
+        return f"⚠️ Sorry, I hit a snag with {provider.capitalize()}. Attempting to stabilize..."
 
 # ── Handlers ──────────────────────────────────────────────────────────────────
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = update.effective_user.first_name or "Lakshan"
-    provider = get_provider(update.effective_chat.id)
-    await update.message.reply_text(
-        f"Hi {name}, I'm ready to help. I'm currently using {provider.capitalize()}.\n\n"
-        "Use /model to switch engines or just send a message to start.",
-        parse_mode="Markdown",
+    chat_id = update.effective_chat.id
+    provider = get_provider(chat_id)
+    
+    # Initialize history if new
+    get_history(chat_id)
+    
+    welcome_text = (
+        f"Greetings, {name}. System online.\n\n"
+        f"I am J.A.R.V.I.S., powered by {provider.capitalize()}.\n"
+        "How may I assist you today?\n\n"
+        "Available commands: /help"
     )
+    await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
 async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
@@ -206,7 +214,6 @@ async def brief_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def code_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    import random
     challenges = [
         "Challenge: Write a one-liner to reverse a string in Python.",
         "Challenge: What is the time complexity of a binary search?",
@@ -228,10 +235,15 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown",
     )
 
-async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "I'm sorry, Sir, I don't recognize that command. Type /help for available protocols."
+    )
+
+async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     conversation_history.pop(chat_id, None)
-    await update.message.reply_text("Memory wiped.")
+    await update.message.reply_text("Memory wiped, Sir. Re-initializing systems...")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -287,9 +299,14 @@ def main():
     app.add_handler(CommandHandler("terminal", terminal_command))
     app.add_handler(CommandHandler("code", code_command))
     app.add_handler(CommandHandler("help",  help_command))
-    app.add_handler(CommandHandler("clear", clear))
+    app.add_handler(CommandHandler(["clear", "reset"], clear_command))
     app.add_handler(CallbackQueryHandler(button_callback))
+    
+    # Handle normal messages
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    # Handle unknown commands
+    app.add_handler(MessageHandler(filters.COMMAND, unknown_command))
     
     # Global error handler
     app.add_error_handler(error_handler)
