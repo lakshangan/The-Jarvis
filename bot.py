@@ -28,7 +28,7 @@ load_dotenv()
 
 # ── Health Check Server ───────────────────────────────────────────────────────
 async def health_check(request):
-    return web.Response(text="J.A.R.V.I.S. is logged in and monitoring systems, Sir. 🤵‍♂️")
+    return web.Response(text="J.A.R.V.I.S. is logged in and monitoring systems, Sir.")
 
 async def start_health_server():
     if not HAS_AIOHTTP:
@@ -78,7 +78,7 @@ Communication Rules:
 4. **Natural Tone**: Speak like a human—calm, confident, and professional but friendly. 
 5. **Personalized**: Address the user as "Lakshan" occasionally where it feels natural.
 6. **No "AI-speak"**: Never use phrases like "I can help with that" or "As an AI."
-7. **Minimal Emojis**: Use emojis only if the user uses them or very sparingly.
+7. **No Emojis**: You must NEVER use emojis in your responses. This is a strict requirement.
 8. **Search Tool**: You have access to a web search tool. If you need real-time information or aren't sure about a fact, you MUST output exactly: `[SEARCH: your query]`. Nothing else. I will provide the search results, and then you can answer Lakshan's question.
 
 Goal: Feel like a sharp, helpful human conversation. Today's date is """ + datetime.now().strftime("%A, %B %d, %Y") + "."
@@ -98,7 +98,7 @@ async def notify_admin(context: ContextTypes.DEFAULT_TYPE, message: str):
     """Sends a notification to the admin chat ID."""
     if ADMIN_CHAT_ID:
         try:
-            await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"🚨 *SYSTEM ALERT*\n\n{message}", parse_mode="Markdown")
+            await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"SYSTEM ALERT\n\n{message}", parse_mode="Markdown")
         except Exception as e:
             logger.error(f"Failed to notify admin: {e}")
 
@@ -126,7 +126,7 @@ async def search_web(query: str) -> str:
             return f"Web Search Results for '{query}':\n{summary}"
     except Exception as e:
         logger.error(f"Search error: {e}")
-        return "⚠️ I encountered an error while searching the web."
+        return "I encountered an error while searching the web."
 
 async def ask_ai(chat_id: int, user_text: str) -> str:
     provider = get_provider(chat_id)
@@ -135,7 +135,7 @@ async def ask_ai(chat_id: int, user_text: str) -> str:
     try:
         for _ in range(2): # Allow 1 search loop
             if provider == "groq":
-                if not groq_client: return "⚠️ Groq API key not configured."
+                if not groq_client: return "Groq API key not configured."
                 response = await groq_client.chat.completions.create(
                     model="llama-3.3-70b-versatile",
                     messages=[{"role": "system", "content": SYSTEM_PROMPT}] + get_history(chat_id),
@@ -143,7 +143,7 @@ async def ask_ai(chat_id: int, user_text: str) -> str:
                 )
                 reply = response.choices[0].message.content
             else:
-                if not claude: return "⚠️ Claude API key not configured."
+                if not claude: return "Claude API key not configured."
                 response = await claude.messages.create(
                     model="claude-3-5-sonnet-20241022",
                     max_tokens=1024,
@@ -164,13 +164,13 @@ async def ask_ai(chat_id: int, user_text: str) -> str:
             add_to_history(chat_id, "assistant", reply)
             return reply
             
-        return "⚠️ Search loop limit reached."
+        return "Search loop limit reached."
     except (groq.RateLimitError, anthropic.RateLimitError) as e:
         logger.warning(f"Rate limited on {provider}: {e}")
-        return f"⚠️ Token/Rate limit reached for {provider.capitalize()}. I've notified the admin."
+        return f"Token/Rate limit reached for {provider.capitalize()}. I've notified the admin."
     except Exception as e:
         logger.error(f"API error ({provider}): {e}")
-        return f"⚠️ Sorry, I hit a snag with {provider.capitalize()}. Attempting to stabilize..."
+        return f"Sorry, I hit a snag with {provider.capitalize()}. Attempting to stabilize..."
 
 # ── Handlers ──────────────────────────────────────────────────────────────────
 
@@ -236,10 +236,10 @@ async def brief_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     date = datetime.now().strftime("%A, %b %d")
     provider = get_provider(update.effective_chat.id)
     await update.message.reply_text(
-        f"📅 *Briefing: {date}*\n\n"
-        f"• *Status:* All systems green\n"
-        f"• *Core:* {provider.capitalize()}\n"
-        f"• *Inbox:* 0 pending alerts\n\n"
+        f"Briefing: {date}\n\n"
+        f"* Status: All systems green\n"
+        f"* Core: {provider.capitalize()}\n"
+        f"* Inbox: 0 pending alerts\n\n"
         "How can I assist your workflow, Lakshan?",
         parse_mode="Markdown",
     )
@@ -251,7 +251,7 @@ async def code_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Challenge: Fix this: `if (x = 5) { ... }`",
         "Challenge: Explain 'Hoisting' in JavaScript in 10 words.",
     ]
-    await update.message.reply_text(f"🚀 *Coding Challenge:*\n\n{random.choice(challenges)}", parse_mode="Markdown")
+    await update.message.reply_text(f"Coding Challenge:\n\n{random.choice(challenges)}", parse_mode="Markdown")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -290,15 +290,15 @@ async def remind_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             seconds = int(time_str) * 60 # Default to minutes
             
         context.job_queue.run_once(send_reminder, seconds, chat_id=chat_id, data=reminder_text)
-        await update.message.reply_text(f"✅ Protocol accepted. I will remind you about '{reminder_text}' in {time_str}.")
+        await update.message.reply_text(f"Protocol accepted. I will remind you about '{reminder_text}' in {time_str}.")
     except ValueError:
-        await update.message.reply_text("⚠️ Invalid time format. Please use `5m`, `1h`, etc.")
+        await update.message.reply_text("Invalid time format. Please use `5m`, `1h`, etc.")
 
 async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
     await context.bot.send_message(
         chat_id=job.chat_id, 
-        text=f"🔔 *REMINDER, SIR*\n\n{job.data}", 
+        text=f"REMINDER, SIR\n\n{job.data}", 
         parse_mode="Markdown"
     )
 
@@ -357,7 +357,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     # Notify user if possible
     if isinstance(update, Update) and update.effective_message:
         await update.effective_message.reply_text(
-            "⚠️ An internal system error occurred. Operations have been logged and the admin has been notified."
+            "An internal system error occurred. Operations have been logged and the admin has been notified."
         )
 
 # ── Main ───────────────────────────────────────────────────────────────────────
