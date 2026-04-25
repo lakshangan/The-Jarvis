@@ -19,6 +19,8 @@ try:
     HAS_AIOHTTP = True
 except ImportError:
     HAS_AIOHTTP = False
+from duckduckgo_search import DDGS
+import re
 
 
 # Load environment variables
@@ -77,6 +79,7 @@ Communication Rules:
 5. **Personalized**: Address the user as "Lakshan" occasionally where it feels natural.
 6. **No "AI-speak"**: Never use phrases like "I can help with that" or "As an AI."
 7. **Minimal Emojis**: Use emojis only if the user uses them or very sparingly.
+8. **Search Tool**: You have access to a web search tool. If you need real-time information or aren't sure about a fact, you MUST output exactly: `[SEARCH: your query]`. Nothing else. I will provide the search results, and then you can answer Lakshan's question.
 
 Goal: Feel like a sharp, helpful human conversation. Today's date is """ + datetime.now().strftime("%A, %B %d, %Y") + "."
 
@@ -110,31 +113,58 @@ def get_provider(chat_id: int) -> str:
             user_providers[chat_id] = "groq" if GROQ_KEY else ("claude" if ANTHROPIC_KEY else "unknown")
     return user_providers[chat_id]
 
+async def search_web(query: str) -> str:
+    """Performs a web search and returns a summary."""
+    try:
+        logger.info(f"Searching web for: {query}")
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=3))
+            if not results:
+                return "No relevant information found on the web."
+            
+            summary = "\n".join([f"• {r['title']}: {r['body']}" for r in results])
+            return f"Web Search Results for '{query}':\n{summary}"
+    except Exception as e:
+        logger.error(f"Search error: {e}")
+        return "⚠️ I encountered an error while searching the web."
+
 async def ask_ai(chat_id: int, user_text: str) -> str:
     provider = get_provider(chat_id)
     add_to_history(chat_id, "user", user_text)
     
     try:
-        if provider == "groq":
-            if not groq_client: return "⚠️ Groq API key not configured."
-            response = await groq_client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[{"role": "system", "content": SYSTEM_PROMPT}] + get_history(chat_id),
-                max_tokens=2048,
-            )
-            reply = response.choices[0].message.content
-        else:
-            if not claude: return "⚠️ Claude API key not configured."
-            response = await claude.messages.create(
-                model="claude-3-5-sonnet-20241022",
-                max_tokens=1024,
-                system=SYSTEM_PROMPT,
-                messages=get_history(chat_id),
-            )
-            reply = response.content[0].text
+        for _ in range(2): # Allow 1 search loop
+            if provider == "groq":
+                if not groq_client: return "⚠️ Groq API key not configured."
+                response = await groq_client.chat.completions.create(
+                    model="llama-3.3-70b-versatile",
+                    messages=[{"role": "system", "content": SYSTEM_PROMPT}] + get_history(chat_id),
+                    max_tokens=2048,
+                )
+                reply = response.choices[0].message.content
+            else:
+                if not claude: return "⚠️ Claude API key not configured."
+                response = await claude.messages.create(
+                    model="claude-3-5-sonnet-20241022",
+                    max_tokens=1024,
+                    system=SYSTEM_PROMPT,
+                    messages=get_history(chat_id),
+                )
+                reply = response.content[0].text
             
-        add_to_history(chat_id, "assistant", reply)
-        return reply
+            # Check for search request
+            search_match = re.search(r"\[SEARCH:\s*(.*?)\]", reply)
+            if search_match:
+                query = search_match.group(1)
+                search_results = await search_web(query)
+                add_to_history(chat_id, "assistant", reply)
+                add_to_history(chat_id, "user", f"SYSTEM: {search_results}")
+                continue # Loop back to AI with search results
+            
+            add_to_history(chat_id, "assistant", reply)
+            return reply
+            
+        return "⚠️ Search loop limit reached."
     except (groq.RateLimitError, anthropic.RateLimitError) as e:
         logger.warning(f"Rate limited on {provider}: {e}")
         return f"⚠️ Token/Rate limit reached for {provider.capitalize()}. I've notified the admin."
@@ -231,10 +261,45 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/brief - Mission briefing\n"
         "/terminal - System shell\n"
         "/code - Random challenge\n"
+        "/remind - Set reminder (e.g. /remind 10m Coffee)\n"
         "/clear - Wipe memory\n"
         "/id    - Get your Chat ID\n"
         "/help  - Help guide",
         parse_mode="Markdown",
+    )
+
+async def remind_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    args = context.args
+    
+    if len(args) < 2:
+        await update.message.reply_text("Usage: `/remind <time>m <message>`\nExample: `/remind 5m Meeting starts`", parse_mode="Markdown")
+        return
+
+    time_str = args[0].lower()
+    reminder_text = " ".join(args[1:])
+    
+    try:
+        if time_str.endswith("m"):
+            seconds = int(time_str[:-1]) * 60
+        elif time_str.endswith("s"):
+            seconds = int(time_str[:-1])
+        elif time_str.endswith("h"):
+            seconds = int(time_str[:-1]) * 3600
+        else:
+            seconds = int(time_str) * 60 # Default to minutes
+            
+        context.job_queue.run_once(send_reminder, seconds, chat_id=chat_id, data=reminder_text)
+        await update.message.reply_text(f"✅ Protocol accepted. I will remind you about '{reminder_text}' in {time_str}.")
+    except ValueError:
+        await update.message.reply_text("⚠️ Invalid time format. Please use `5m`, `1h`, etc.")
+
+async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
+    job = context.job
+    await context.bot.send_message(
+        chat_id=job.chat_id, 
+        text=f"🔔 *REMINDER, SIR*\n\n{job.data}", 
+        parse_mode="Markdown"
     )
 
 async def id_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -318,6 +383,7 @@ def main():
     app.add_handler(CommandHandler("brief", brief_command))
     app.add_handler(CommandHandler("terminal", terminal_command))
     app.add_handler(CommandHandler("code", code_command))
+    app.add_handler(CommandHandler("remind", remind_command))
     app.add_handler(CommandHandler("help",  help_command))
     app.add_handler(CommandHandler("id", id_command))
     app.add_handler(CommandHandler(["clear", "reset"], clear_command))
