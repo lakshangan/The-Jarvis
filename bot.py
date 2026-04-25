@@ -145,6 +145,7 @@ async def ask_ai(chat_id: int, user_text: str) -> str:
 # ── Handlers ──────────────────────────────────────────────────────────────────
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(f"Start command received from {update.effective_user.first_name} (ID: {update.effective_user.id})")
     name = update.effective_user.first_name or "Lakshan"
     chat_id = update.effective_chat.id
     provider = get_provider(chat_id)
@@ -231,14 +232,28 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/terminal - System shell\n"
         "/code - Random challenge\n"
         "/clear - Wipe memory\n"
+        "/id    - Get your Chat ID\n"
         "/help  - Help guide",
         parse_mode="Markdown",
     )
+
+async def id_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    await update.message.reply_text(f"Your Chat ID is: `{chat_id}`", parse_mode="Markdown")
 
 async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "I'm sorry, Sir, I don't recognize that command. Type /help for available protocols."
     )
+
+async def debug_log_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(f"Incoming Update: {update.update_id}")
+    if update.message:
+        logger.info(f"  Message from {update.effective_user.first_name} (ID: {update.effective_user.id}): {update.message.text}")
+    elif update.callback_query:
+        logger.info(f"  Callback from {update.effective_user.first_name}: {update.callback_query.data}")
+    else:
+        logger.info(f"  Other update type: {update}")
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -248,6 +263,7 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_text = update.message.text
+    logger.info(f"Message received from {update.effective_user.first_name} (ID: {update.effective_user.id}): {user_text}")
     if not user_text: return
 
     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
@@ -293,12 +309,17 @@ def main():
     logger.info("Starting Telegram AI Agent…")
     app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
 
+    # Log every single update for debugging
+    from telegram.ext import TypeHandler
+    app.add_handler(TypeHandler(Update, debug_log_update), group=-1)
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("model", model_command))
     app.add_handler(CommandHandler("brief", brief_command))
     app.add_handler(CommandHandler("terminal", terminal_command))
     app.add_handler(CommandHandler("code", code_command))
     app.add_handler(CommandHandler("help",  help_command))
+    app.add_handler(CommandHandler("id", id_command))
     app.add_handler(CommandHandler(["clear", "reset"], clear_command))
     app.add_handler(CallbackQueryHandler(button_callback))
     
