@@ -12,8 +12,11 @@ from telegram.ext import (
     ContextTypes,
     CallbackQueryHandler,
 )
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
+import json
+import asyncio
+import io
 try:
     from aiohttp import web
     HAS_AIOHTTP = True
@@ -21,6 +24,9 @@ except ImportError:
     HAS_AIOHTTP = False
 from duckduckgo_search import DDGS
 import re
+import psutil
+from bs4 import BeautifulSoup
+import platform
 
 
 # Load environment variables
@@ -68,6 +74,7 @@ groq_client = groq.AsyncGroq(api_key=GROQ_KEY) if GROQ_KEY else None
 conversation_history: dict[int, list[dict]] = {}
 user_providers: dict[int, str] = {} # chat_id -> "claude" or "groq"
 MAX_HISTORY = 20
+REMINDERS_FILE = "reminders_v2.json"
 
 SYSTEM_PROMPT = """You are a sharp, helpful assistant. 
 
@@ -80,8 +87,11 @@ Communication Rules:
 6. **No "AI-speak"**: Never use phrases like "I can help with that" or "As an AI."
 7. **No Emojis**: You must NEVER use emojis in your responses. This is a strict requirement.
 8. **Search Tool**: You have access to a web search tool. If you need real-time information or aren't sure about a fact, you MUST output exactly: `[SEARCH: your query]`. Nothing else. I will provide the search results, and then you can answer Lakshan's question.
+9. **Reminder Tool**: You can set reminders. If Lakshan asks to be reminded of something, output exactly: `[REMIND: time_delay | message]`. The `time_delay` MUST be a relative duration like '5m', '1h', '10s', or '2d'. 
+10. **Web Reader**: You can read websites. If Lakshan provides a URL, you can ask to read it by outputting: `[READ: url]`.
+11. **Vision/Voice/Docs**: You can analyze images, listen to voice notes, and read uploaded documents (I will provide the transcription/description/content).
 
-Goal: Feel like a sharp, helpful human conversation. Today's date is """ + datetime.now().strftime("%A, %B %d, %Y") + "."
+Goal: Feel like a sharp, helpful human conversation. Address Lakshan with respect but as a partner. Today's date is """ + datetime.now().strftime("%A, %B %d, %Y") + "."
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -128,27 +138,87 @@ async def search_web(query: str) -> str:
         logger.error(f"Search error: {e}")
         return "I encountered an error while searching the web."
 
-async def ask_ai(chat_id: int, user_text: str) -> str:
-    provider = get_provider(chat_id)
-    add_to_history(chat_id, "user", user_text)
-    
+async def fetch_url_content(url: str) -> str:
+    """Fetches and cleans content from a URL."""
     try:
-        for _ in range(2): # Allow 1 search loop
+        logger.info(f"Fetching URL: {url}")
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=10) as response:
+                if response.status != 200:
+                    return f"Error: Received status {response.status} from {url}"
+                html = await response.text()
+                soup = BeautifulSoup(html, "html.parser")
+                
+                # Remove scripts and styles
+                for script in soup(["script", "style"]):
+                    script.extract()
+                
+                text = soup.get_text()
+                # Clean up whitespace
+                lines = (line.strip() for line in text.splitlines())
+                chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+                text = "\n".join(chunk for chunk in chunks if chunk)
+                
+                return text[:5000] # Limit content size for AI context
+    except Exception as e:
+        logger.error(f"URL fetch error: {e}")
+        return f"I couldn't access that URL, Sir. Error: {e}"
+
+async def ask_ai(chat_id: int, user_text: str, image_data: bytes = None, document_text: str = None) -> str:
+    provider = get_provider(chat_id)
+    
+    # Prepare content
+    if document_text:
+        user_text = f"[DOCUMENT CONTENT: {document_text}]\n\n{user_text}"
+        
+    if image_data and provider == "claude":
+        # Vision support for Claude
+        import base64
+        image_base64 = base64.b64encode(image_data).decode("utf-8")
+        content = [
+            {"type": "text", "text": user_text},
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/jpeg",
+                    "data": image_base64,
+                },
+            }
+        ]
+        add_to_history(chat_id, "user", user_text) # Keep text in history
+        # We don't store the full image in history to save space/tokens
+    else:
+        add_to_history(chat_id, "user", user_text)
+        content = user_text
+
+    try:
+        for _ in range(3): # Allow search/remind loops
+            history = get_history(chat_id)
+            
             if provider == "groq":
                 if not groq_client: return "Groq API key not configured."
+                # Groq doesn't support vision in llama3-70b yet, so we use text
                 response = await groq_client.chat.completions.create(
                     model="llama-3.3-70b-versatile",
-                    messages=[{"role": "system", "content": SYSTEM_PROMPT}] + get_history(chat_id),
+                    messages=[{"role": "system", "content": SYSTEM_PROMPT}] + history,
                     max_tokens=2048,
                 )
                 reply = response.choices[0].message.content
             else:
                 if not claude: return "Claude API key not configured."
+                
+                # For the first message in the loop, if we have image_data, use it
+                if _ == 0 and image_data:
+                    messages = history[:-1] + [{"role": "user", "content": content}]
+                else:
+                    messages = history
+
                 response = await claude.messages.create(
                     model="claude-3-5-sonnet-20241022",
                     max_tokens=1024,
                     system=SYSTEM_PROMPT,
-                    messages=get_history(chat_id),
+                    messages=messages,
                 )
                 reply = response.content[0].text
             
@@ -159,18 +229,33 @@ async def ask_ai(chat_id: int, user_text: str) -> str:
                 search_results = await search_web(query)
                 add_to_history(chat_id, "assistant", reply)
                 add_to_history(chat_id, "user", f"SYSTEM: {search_results}")
-                continue # Loop back to AI with search results
+                continue 
+            
+            # Check for read request
+            read_match = re.search(r"\[READ:\s*(.*?)\]", reply)
+            if read_match:
+                url = read_match.group(1)
+                page_content = await fetch_url_content(url)
+                add_to_history(chat_id, "assistant", reply)
+                add_to_history(chat_id, "user", f"SYSTEM (Content of {url}):\n{page_content}")
+                continue
+
+            # Check for remind request
+            remind_match = re.search(r"\[REMIND:\s*(.*?)\s*\|\s*(.*?)\]", reply)
+            if remind_match:
+                time_str = remind_match.group(1).strip()
+                reminder_text = remind_match.group(2).strip()
+                add_to_history(chat_id, "assistant", reply)
+                # We will handle the actual job scheduling in handle_message/handlers
+                return f"CMD:REMIND|{time_str}|{reminder_text}"
             
             add_to_history(chat_id, "assistant", reply)
             return reply
             
-        return "Search loop limit reached."
-    except (groq.RateLimitError, anthropic.RateLimitError) as e:
-        logger.warning(f"Rate limited on {provider}: {e}")
-        return f"Token/Rate limit reached for {provider.capitalize()}. I've notified the admin."
+        return "System loop limit reached."
     except Exception as e:
         logger.error(f"API error ({provider}): {e}")
-        return f"Sorry, I hit a snag with {provider.capitalize()}. Attempting to stabilize..."
+        return f"Sorry, I hit a snag with {provider.capitalize()}. Error: {str(e)[:100]}"
 
 # ── Handlers ──────────────────────────────────────────────────────────────────
 
@@ -216,21 +301,47 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def terminal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = update.effective_user.first_name or "Lakshan"
     provider = get_provider(update.effective_chat.id)
+    cpu_usage = psutil.cpu_percent()
+    mem = psutil.virtual_memory()
     terminal_output = (
         "```\n"
         "Initializing Neural Link...\n"
-        f"User: {name}@jarvis-core\n"
-        "Status: VERIFIED\n"
+        f"User:      {name}@jarvis-core\n"
+        "Status:    VERIFIED\n"
         "---------------------------------\n"
         f"Engine:    {provider.upper()}\n"
-        "Latency:   24ms\n"
-        "Uptime:    99.98%\n"
-        "Memory:    Optimized\n"
+        f"CPU Load:  {cpu_usage}%\n"
+        f"Memory:    {mem.percent}% ({mem.used//(1024**2)}MB/{mem.total//(1024**2)}MB)\n"
+        f"System:    {platform.system()} {platform.release()}\n"
+        f"Tasks:     {asyncio.all_tasks().__len__()}\n"
         "---------------------------------\n"
-        "System ready. Awaiting input...\n"
+        "All systems operational. Ready for input.\n"
         "```"
     )
     await update.message.reply_text(terminal_output, parse_mode="MarkdownV2")
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    reminders = []
+    if os.path.exists(REMINDERS_FILE):
+        with open(REMINDERS_FILE, "r") as f:
+            reminders = json.load(f)
+    
+    user_reminders = [r for r in reminders if r["chat_id"] == chat_id]
+    
+    if not user_reminders:
+        await update.message.reply_text("No active protocols (reminders) found, Sir.")
+        return
+        
+    text = "Current Protocols:\n\n"
+    for i, r in enumerate(user_reminders, 1):
+        eta = datetime.fromisoformat(r["eta"])
+        remaining = eta - datetime.now()
+        if remaining.total_seconds() > 0:
+            time_left = str(remaining).split(".")[0]
+            text += f"{i}. {r['text']} (ETA: {time_left})\n"
+            
+    await update.message.reply_text(text)
 
 async def brief_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     date = datetime.now().strftime("%A, %b %d")
@@ -262,6 +373,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/terminal - System shell\n"
         "/code - Random challenge\n"
         "/remind - Set reminder (e.g. /remind 10m Coffee)\n"
+        "/status - View active reminders\n"
         "/clear - Wipe memory\n"
         "/id    - Get your Chat ID\n"
         "/help  - Help guide",
@@ -273,32 +385,85 @@ async def remind_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     
     if len(args) < 2:
-        await update.message.reply_text("Usage: `/remind <time>m <message>`\nExample: `/remind 5m Meeting starts`", parse_mode="Markdown")
+        await update.message.reply_text("Usage: `/remind <time> <message>`\nExample: `/remind 5m Meeting` or just talk to me!", parse_mode="Markdown")
         return
 
     time_str = args[0].lower()
     reminder_text = " ".join(args[1:])
-    
+    await schedule_reminder(chat_id, time_str, reminder_text, context)
+
+async def schedule_reminder(chat_id, time_str, reminder_text, context):
     try:
-        if time_str.endswith("m"):
-            seconds = int(time_str[:-1]) * 60
-        elif time_str.endswith("s"):
-            seconds = int(time_str[:-1])
-        elif time_str.endswith("h"):
-            seconds = int(time_str[:-1]) * 3600
+        seconds = parse_time(time_str)
+        job_name = f"remind_{chat_id}_{random.randint(1000, 9999)}"
+        context.job_queue.run_once(send_reminder, seconds, chat_id=chat_id, name=job_name, data=reminder_text)
+        
+        # Save for persistence
+        save_reminder(chat_id, time_str, reminder_text, job_name)
+        
+        msg = f"Protocol accepted. I will remind you about '{reminder_text}' in {time_str}."
+        if hasattr(context, "update") and context.update.message:
+            await context.update.message.reply_text(msg)
         else:
-            seconds = int(time_str) * 60 # Default to minutes
+            await context.bot.send_message(chat_id=chat_id, text=msg)
             
-        context.job_queue.run_once(send_reminder, seconds, chat_id=chat_id, data=reminder_text)
-        await update.message.reply_text(f"Protocol accepted. I will remind you about '{reminder_text}' in {time_str}.")
-    except ValueError:
-        await update.message.reply_text("Invalid time format. Please use `5m`, `1h`, etc.")
+    except ValueError as e:
+        logger.error(f"Reminder error: {e}")
+        if hasattr(context, "update") and context.update.message:
+            await context.update.message.reply_text(f"System Error: {str(e)}")
+
+def parse_time(time_str):
+    time_str = time_str.lower()
+    if time_str.endswith("m"):
+        return int(time_str[:-1]) * 60
+    elif time_str.endswith("s"):
+        return int(time_str[:-1])
+    elif time_str.endswith("h"):
+        return int(time_str[:-1]) * 3600
+    elif time_str.endswith("d"):
+        return int(time_str[:-1]) * 86400
+    else:
+        return int(time_str) * 60 # Default to minutes
+
+def save_reminder(chat_id, time_str, text, job_name):
+    try:
+        reminders = []
+        if os.path.exists(REMINDERS_FILE):
+            with open(REMINDERS_FILE, "r") as f:
+                reminders = json.load(f)
+        
+        eta = datetime.now() + timedelta(seconds=parse_time(time_str))
+        reminders.append({
+            "chat_id": chat_id,
+            "text": text,
+            "eta": eta.isoformat(),
+            "job_name": job_name
+        })
+        
+        with open(REMINDERS_FILE, "w") as f:
+            json.dump(reminders, f)
+    except Exception as e:
+        logger.error(f"Failed to save reminder: {e}")
+
+def clean_reminder(job_name):
+    try:
+        if not os.path.exists(REMINDERS_FILE): return
+        with open(REMINDERS_FILE, "r") as f:
+            reminders = json.load(f)
+        
+        reminders = [r for r in reminders if r["job_name"] != job_name]
+        
+        with open(REMINDERS_FILE, "w") as f:
+            json.dump(reminders, f)
+    except Exception as e:
+        logger.error(f"Failed to clean reminder: {e}")
 
 async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
+    clean_reminder(job.name)
     await context.bot.send_message(
         chat_id=job.chat_id, 
-        text=f"REMINDER, SIR\n\n{job.data}", 
+        text=f"⚠️ **PRIORITY ALERT: REMINDER**\n\nSir, you asked me to remind you:\n\"{job.data}\"", 
         parse_mode="Markdown"
     )
 
@@ -328,15 +493,18 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_text = update.message.text
-    logger.info(f"Message received from {update.effective_user.first_name} (ID: {update.effective_user.id}): {user_text}")
     if not user_text: return
+    
+    logger.info(f"Message from {update.effective_user.first_name}: {user_text}")
 
     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
     reply = await ask_ai(chat_id, user_text)
 
-    # Check if we should notify admin (if token limit error occurred)
-    if "Token/Rate limit reached" in reply:
-        await notify_admin(context, f"User {update.effective_user.first_name} ({chat_id}) encountered a rate limit.")
+    # Handle Special Commands from AI
+    if reply.startswith("CMD:REMIND|"):
+        _, time_str, text = reply.split("|")
+        await schedule_reminder(chat_id, time_str, text, context)
+        return
 
     # Split long messages and handle Markdown errors
     chunks = [reply[i:i+4096] for i in range(0, len(reply), 4096)]
@@ -344,8 +512,90 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await update.message.reply_text(chunk, parse_mode="Markdown")
         except Exception as e:
-            logger.error(f"Markdown error (falling back to plain text): {e}")
             await update.message.reply_text(chunk)
+
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if not groq_client:
+        await update.message.reply_text("Voice processing offline. (Groq key missing)")
+        return
+
+    await context.bot.send_chat_action(chat_id=chat_id, action="record_voice")
+    voice_file = await update.message.voice.get_file()
+    
+    # Download to buffer
+    out = io.BytesIO()
+    await voice_file.download_to_memory(out)
+    out.seek(0)
+    
+    try:
+        # Transcribe with Groq
+        transcription = await groq_client.audio.transcriptions.create(
+            file=("voice.ogg", out.read()),
+            model="whisper-large-v3",
+            response_format="text",
+        )
+        
+        await update.message.reply_text(f"_*Transcribing...*_ \n\"{transcription}\"", parse_mode="Markdown")
+        
+        # Process transcription as message
+        await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+        reply = await ask_ai(chat_id, f"[VOICE TRANSCRIPT: {transcription}]")
+        
+        if reply.startswith("CMD:REMIND|"):
+            _, time_str, text = reply.split("|")
+            await schedule_reminder(chat_id, time_str, text, context)
+        else:
+            await update.message.reply_text(reply, parse_mode="Markdown")
+            
+    except Exception as e:
+        logger.error(f"Voice error: {e}")
+        await update.message.reply_text("Sorry Sir, I couldn't process that audio.")
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    caption = update.message.caption or "What's in this image?"
+    
+    if get_provider(chat_id) != "claude":
+        await update.message.reply_text("Switching to Claude for vision analysis...")
+        user_providers[chat_id] = "claude"
+
+    await context.bot.send_chat_action(chat_id=chat_id, action="upload_photo")
+    photo_file = await update.message.photo[-1].get_file()
+    
+    out = io.BytesIO()
+    await photo_file.download_to_memory(out)
+    image_bytes = out.getvalue()
+    
+    reply = await ask_ai(chat_id, caption, image_data=image_bytes)
+    await update.message.reply_text(reply, parse_mode="Markdown")
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    doc = update.message.document
+    caption = update.message.caption or f"Please analyze this file: {doc.file_name}"
+
+    # Only process text-based files for now
+    text_extensions = ('.py', '.js', '.txt', '.html', '.css', '.md', '.json', '.yaml', '.yml')
+    if not any(doc.file_name.lower().endswith(ext) for ext in text_extensions):
+        await update.message.reply_text("I can only analyze text-based files (code, docs, etc.) at the moment, Sir.")
+        return
+
+    await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+    doc_file = await doc.get_file()
+    
+    out = io.BytesIO()
+    await doc_file.download_to_memory(out)
+    try:
+        content = out.getvalue().decode("utf-8")
+        if len(content) > 10000:
+            content = content[:10000] + "... (truncated)"
+        
+        reply = await ask_ai(chat_id, caption, document_text=content)
+        await update.message.reply_text(reply, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Doc error: {e}")
+        await update.message.reply_text("I hit a snag reading that file. Is it encoded in UTF-8, Sir?")
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Log the error and send a telegram message to notify the developer."""
@@ -365,6 +615,30 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 async def post_init(application: Application):
     # Start the health check server in the background
     await start_health_server()
+    
+    # Reload persistent reminders
+    if os.path.exists(REMINDERS_FILE):
+        try:
+            with open(REMINDERS_FILE, "r") as f:
+                reminders = json.load(f)
+            
+            now = datetime.now()
+            count = 0
+            for r in reminders:
+                eta = datetime.fromisoformat(r["eta"])
+                if eta > now:
+                    seconds = (eta - now).total_seconds()
+                    application.job_queue.run_once(
+                        send_reminder, 
+                        seconds, 
+                        chat_id=r["chat_id"], 
+                        name=r["job_name"], 
+                        data=r["text"]
+                    )
+                    count += 1
+            logger.info(f"Restored {count} pending reminders.")
+        except Exception as e:
+            logger.error(f"Failed to restore reminders: {e}")
 
 def main():
     if not TELEGRAM_TOKEN:
@@ -384,6 +658,7 @@ def main():
     app.add_handler(CommandHandler("terminal", terminal_command))
     app.add_handler(CommandHandler("code", code_command))
     app.add_handler(CommandHandler("remind", remind_command))
+    app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CommandHandler("help",  help_command))
     app.add_handler(CommandHandler("id", id_command))
     app.add_handler(CommandHandler(["clear", "reset"], clear_command))
@@ -391,6 +666,9 @@ def main():
     
     # Handle normal messages
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     
     # Handle unknown commands
     app.add_handler(MessageHandler(filters.COMMAND, unknown_command))

@@ -1,82 +1,80 @@
-# 🤖 J.A.R.V.I.S. — Multi-LLM AI Agent
+# J.A.R.V.I.S. — Advanced Multi-Modal AI Agent
 
-**J.A.R.V.I.S.** is a professional-grade Telegram AI agent designed for speed, intelligence, and utility. It seamlessly integrates real-time web search, proactive reminders, and state-of-the-art language models (LLMs) into a single, responsive interface.
-
----
-
-## 🚀 Overview
-At its core, this agent acts as a "Neural Link" between your Telegram chat and the world's most powerful AI engines. Whether you need deep reasoning from **Claude 3.5 Sonnet** or lightning-fast responses from **Groq (Llama 3.3)**, J.A.R.V.I.S. adapts to your workflow.
+**J.A.R.V.I.S.** is a state-of-the-art Telegram AI agent designed for power users who need a seamless "Neural Link" to the world's most capable AI engines. It integrates real-time web browsing, multi-modal analysis (Vision/Voice/Docs), and persistent productivity tools.
 
 ---
 
-## ✨ Features
+## 🚀 Key Features
 
 ### 🧠 Intelligence & Knowledge
-- **Dual-Engine Architecture**: Toggle between **Anthropic Claude 3.5** (Intelligence) and **Groq Llama 3.3** (Speed) using `/model`.
-- **🔍 Live Web Search**: Integrated **DuckDuckGo** search engine. If the AI lacks real-time info, it autonomously searches the web to provide up-to-date answers.
-- **Contextual Memory**: Maintains a sliding window of the last 20 messages for multi-turn reasoning.
+- **Multi-LLM Core**: Toggle between **Anthropic Claude 3.5 Sonnet** (Complex Reasoning & Vision) and **Groq Llama 3.3** (Lightning Fast) via `/model`.
+- **Live Web Browsing**: 
+  - **Global Search**: Autonomously searches DuckDuckGo for real-time facts.
+  - **Neural Web Link**: Directly fetches and summarizes content from any URL provided (`[READ: url]`).
+- **Contextual Memory**: Remembers your conversation history for nuanced follow-up discussions.
 
-### ⏰ Productivity & Utility
-- **Proactive Reminders**: Set time-based notifications using the `/remind` command (e.g., `/remind 15m Join the standup`).
-- **Terminal Simulation**: A high-fidelity `/terminal` mode for system status and uptime visualization.
-- **Auto-Message Splitting**: Gracefully handles large AI responses by auto-splitting data over Telegram’s 4096-character limit.
+### 🎙️ Multi-Modal Capabilities
+- **Voice Intelligence**: Send voice notes to J.A.R.V.I.S. He uses **Groq Whisper-v3** for near-instant transcription and response.
+- **Vision Core**: Upload images for analysis. Claude 3.5 Sonnet can describe scenes, read charts, or explain diagrams.
+- **Document Intelligence**: Upload code (`.py`, `.js`), logs, or text files for deep analysis, debugging, or summarization.
 
-### 🛠️ Technical Excellence
-- **Polling Architecture**: Built on `python-telegram-bot` v21+, utilizing an asynchronous event loop for zero-latency interaction.
-- **Health Monitoring**: Integrated `aiohttp` server providing a `/` health-check endpoint for 24/7 uptime monitoring (perfect for Render/Railway).
-- **Global Error Handling**: Robust error-trapping and admin notification system to ensure stability.
+### ⚡ Productivity & Systems
+- **AI-Driven Reminders**: Set reminders using natural language (*"Remind me in 1 hour to check the oven"*) or command `/remind`.
+- **Persistent Job Queue**: Reminders are saved to disk and re-scheduled automatically if the bot restarts.
+- **System Telemetry**: Real-time hardware monitoring via `/terminal` (CPU Load, RAM usage, and active tasks).
+- **Status Protocol**: View all active alerts and countdowns via `/status`.
 
 ---
 
 ## 🛠️ Technical Stack
-- **Framework**: Python 3.11+ | `python-telegram-bot`
-- **AI Engines**: Groq (Llama 3.3 70B), Anthropic (Claude 3.5 Sonnet)
-- **Networking**: `httpx`, `aiohttp` (Health Checks)
-- **Utilities**: `duckduckgo-search` (Web Access), `APScheduler` (JobQueue)
+
+- **Core Framework**: `python-telegram-bot` v21.6 (Async/Await)
+- **AI Providers**:
+  - **Anthropic**: Claude 3.5 Sonnet (Vision & Logic)
+  - **Groq**: Llama 3.3 70B (Text) & Whisper-v3 (Voice)
+- **Web Intelligence**: `beautifulsoup4` (Scraping), `duckduckgo-search` (API)
+- **Systems & Ops**: 
+  - `psutil`: Hardware monitoring
+  - `APScheduler`: Persistent job management
+  - `aiohttp`: Health-check server for 24/7 uptime
 
 ---
 
-## 🚀 Setup Guide
+## ⚙️ Setup Guide
 
 ### 1. Environment Variables
-Create a `.env` file in the root directory:
+Create a `.env` file:
 ```env
-TELEGRAM_BOT_TOKEN=your_telegram_token
+TELEGRAM_BOT_TOKEN=your_token
 GROQ_API_KEY=your_groq_key
-ANTHROPIC_API_KEY=your_claude_key (Optional)
-ADMIN_CHAT_ID=your_id (Get it via /id)
+ANTHROPIC_API_KEY=your_claude_key
+ADMIN_CHAT_ID=your_id (Get via /id)
 ```
 
-### 2. Local Installation
+### 2. Installation
 ```bash
-# Set up environment
-python3 -m venv venv
-source venv/bin/activate
-
-# Install dependencies
 pip install -r requirements.txt
-
-# Run Agent
 python bot.py
 ```
 
 ---
 
-## 💬 Core Commands
+## 🎮 Core Protocols
 
-| Command | Protocol Description |
-|---------|----------------------|
-| `/start` | System initialization & greeting |
-| `/model` | Toggle between AI engines (Groq/Claude) |
-| `/remind` | Schedule time-based reminders (`/remind 10m Message`) |
-| `/brief` | Daily status and mission briefing |
-| `/id` | Retrieve your unique Telegram Chat ID |
+| Protocol | Description |
+|---------|-------------|
+| `/start` | Re-initialize JARVIS systems |
+| `/model` | Switch between Claude and Groq engines |
+| `/remind` | Schedule an alert (or just talk to JARVIS) |
+| `/status` | View all active persistent reminders |
+| `/terminal` | View live system telemetry (CPU/RAM/Tasks) |
+| `/brief` | Mission briefing & daily summary |
 | `/clear` | Wipe short-term memory buffer |
 
 ---
 
-## ☁️ Deployment
-This repository is optimized for **Render.com** (as a Worker) or **Docker**.
-1. Connect your GitHub.
-2. Add your `.env` variables in the dashboard.
-3. The `render.yaml` and `Dockerfile` will handle the rest automatically.
+## 🚢 Deployment
+Optimized for **Render.com** (Worker service) or **Docker**.
+1. Connect GitHub.
+2. The `render.yaml` and `Dockerfile` are pre-configured for automated builds.
+3. Ensure `ADMIN_CHAT_ID` is set to receive critical system alerts.

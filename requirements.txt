@@ -5,3 +5,5 @@ python-dotenv
 aiohttp
 duckduckgo-search
 APScheduler
+beautifulsoup4
+psutil
