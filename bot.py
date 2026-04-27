@@ -89,7 +89,7 @@ Communication Rules:
 6. **No "AI-speak"**: Never use phrases like "I can help with that" or "As an AI."
 7. **No Emojis**: You must NEVER use emojis in your responses. This is a strict requirement.
 8. **Search Tool**: You have access to a web search tool. If you need real-time information or aren't sure about a fact, you MUST output exactly: `[SEARCH: your query]`. Nothing else. I will provide the search results, and then you can answer Lakshan's question.
-9. **Reminder Tool**: You can set reminders. If Lakshan asks to be reminded of something, output exactly: `[REMIND: time_delay | message]`. The `time_delay` MUST be a relative duration like '5m', '1h', '10s', or '2d'. 
+9. **Reminder Tool**: You can set reminders. If Lakshan asks for a one-time reminder, output exactly: `[REMIND: time_delay | message]`. If he asks for a RECURRING reminder (e.g., 'every 2 hours'), output exactly: `[RECUR: interval | message]`. The `interval` should be like '5m', '1h', or '1d'.
 10. **Web Reader**: You can read websites. If Lakshan provides a URL, you can ask to read it by outputting: `[READ: url]`.
 11. **Vision/Voice/Docs**: You can analyze images, listen to voice notes, and read uploaded documents (I will provide the transcription/description/content).
 12. **Commands**: You have these protocols: /start (reset), /model (switch AI), /brief (status), /terminal (stats), /code (challenge), /remind (set alert), /status (manage alerts), /id (get ID), /clear (wipe memory), /help (guide).
@@ -242,6 +242,14 @@ async def ask_ai(chat_id: int, user_text: str, image_data: bytes = None, documen
                 add_to_history(chat_id, "assistant", reply)
                 add_to_history(chat_id, "user", f"SYSTEM (Content of {url}):\n{page_content}")
                 continue
+
+            # Check for recur request
+            recur_match = re.search(r"\[RECUR:\s*(.*?)\s*\|\s*(.*?)\]", reply)
+            if recur_match:
+                interval = recur_match.group(1).strip()
+                message = recur_match.group(2).strip()
+                add_to_history(chat_id, "assistant", reply)
+                return f"CMD:RECUR|{interval}|{message}"
 
             # Check for remind request
             remind_match = re.search(r"\[REMIND:\s*(.*?)\s*\|\s*(.*?)\]", reply)
@@ -441,7 +449,7 @@ async def remind_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reminder_text = " ".join(args[1:])
     await schedule_reminder(chat_id, time_str, reminder_text, context, update)
 
-async def schedule_reminder(chat_id, time_str, reminder_text, context, update=None):
+async def schedule_reminder(chat_id, time_str, reminder_text, context, update=None, is_recurring=False):
     if not context.job_queue:
         msg = "Error: Job Queue is not initialized. Please ensure APScheduler is installed."
         if update: await update.message.reply_text(msg)
@@ -451,21 +459,24 @@ async def schedule_reminder(chat_id, time_str, reminder_text, context, update=No
     try:
         seconds = parse_time(time_str)
         job_name = f"remind_{chat_id}_{random.randint(1000, 9999)}"
-        context.job_queue.run_once(send_reminder, seconds, chat_id=chat_id, name=job_name, data=reminder_text)
         
-        # Save for persistence
-        save_reminder(chat_id, time_str, reminder_text, job_name)
-        
-        msg = f"Protocol accepted. I will remind you about '{reminder_text}' in {time_str}."
+        if is_recurring:
+            context.job_queue.run_repeating(send_reminder, interval=seconds, first=seconds, chat_id=chat_id, name=job_name, data=reminder_text)
+            save_reminder(chat_id, time_str, reminder_text, job_name, is_recurring=True)
+            msg = f"Protocol accepted. I will remind you every {time_str} about '{reminder_text}'."
+        else:
+            context.job_queue.run_once(send_reminder, seconds, chat_id=chat_id, name=job_name, data=reminder_text)
+            save_reminder(chat_id, time_str, reminder_text, job_name, is_recurring=False)
+            msg = f"Protocol accepted. I will remind you about '{reminder_text}' in {time_str}."
+
         if update and update.message:
             await update.message.reply_text(msg)
         else:
             await context.bot.send_message(chat_id=chat_id, text=msg)
             
-    except ValueError as e:
-        logger.error(f"Reminder error: {e}")
-        if hasattr(context, "update") and context.update.message:
-            await context.update.message.reply_text(f"System Error: {str(e)}")
+    except Exception as e:
+        logger.error(f"Scheduling error: {e}")
+        if update: await update.message.reply_text(f"System snag: {e}")
 
 def parse_time(time_str):
     time_str = time_str.lower()
@@ -480,7 +491,7 @@ def parse_time(time_str):
     else:
         return int(time_str) * 60 # Default to minutes
 
-def save_reminder(chat_id, time_str, text, job_name):
+def save_reminder(chat_id, time_str, text, job_name, is_recurring=False):
     try:
         reminders = []
         if os.path.exists(REMINDERS_FILE):
@@ -491,8 +502,10 @@ def save_reminder(chat_id, time_str, text, job_name):
         reminders.append({
             "chat_id": chat_id,
             "text": text,
-            "eta": eta.isoformat(),
-            "job_name": job_name
+            "eta": eta.isoformat() if not is_recurring else None,
+            "interval": time_str if is_recurring else None,
+            "job_name": job_name,
+            "is_recurring": is_recurring
         })
         
         with open(REMINDERS_FILE, "w") as f:
@@ -515,7 +528,10 @@ def clean_reminder(job_name):
 
 async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
-    clean_reminder(job.name)
+    # Only clean if it's not recurring
+    if not job.name.startswith("recur_") and not getattr(job, "is_recurring", False):
+        clean_reminder(job.name)
+    
     try:
         await context.bot.send_message(
             chat_id=job.chat_id, 
@@ -558,6 +574,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply = await ask_ai(chat_id, user_text)
 
     # Handle Special Commands from AI
+    if reply.startswith("CMD:RECUR|"):
+        parts = reply.split("|")
+        if len(parts) >= 3:
+            time_str, text = parts[1], "|".join(parts[2:])
+            await schedule_reminder(chat_id, time_str, text, context, update, is_recurring=True)
+        return
+
     if reply.startswith("CMD:REMIND|"):
         parts = reply.split("|")
         if len(parts) >= 3:
@@ -601,13 +624,14 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_chat_action(chat_id=chat_id, action="typing")
         reply = await ask_ai(chat_id, f"[VOICE TRANSCRIPT: {transcription}]")
         
-        if reply.startswith("CMD:REMIND|"):
+        if reply.startswith("CMD:RECUR|"):
             parts = reply.split("|")
             if len(parts) >= 3:
                 time_str, text = parts[1], "|".join(parts[2:])
-                await schedule_reminder(chat_id, time_str, text, context, update)
-        else:
-            await update.message.reply_text(reply)
+                await schedule_reminder(chat_id, time_str, text, context, update, is_recurring=True)
+            return
+
+        if reply.startswith("CMD:REMIND|"):
             
     except Exception as e:
         logger.error(f"Voice error: {e}")
@@ -722,17 +746,28 @@ async def post_init(application: Application):
             now = datetime.now()
             count = 0
             for r in reminders:
-                eta = datetime.fromisoformat(r["eta"])
-                if eta > now:
-                    seconds = (eta - now).total_seconds()
-                    application.job_queue.run_once(
-                        send_reminder, 
-                        seconds, 
-                        chat_id=r["chat_id"], 
-                        name=r["job_name"], 
+                if r.get("is_recurring"):
+                    interval_sec = parse_time(r["interval"])
+                    application.job_queue.run_repeating(
+                        send_reminder,
+                        interval=interval_sec,
+                        first=interval_sec,
+                        chat_id=r["chat_id"],
+                        name=r["job_name"],
                         data=r["text"]
                     )
-                    count += 1
+                else:
+                    eta = datetime.fromisoformat(r["eta"])
+                    if eta > now:
+                        seconds = (eta - now).total_seconds()
+                        application.job_queue.run_once(
+                            send_reminder, 
+                            seconds, 
+                            chat_id=r["chat_id"], 
+                            name=r["job_name"], 
+                            data=r["text"]
+                        )
+                count += 1
             logger.info(f"Restored {count} pending reminders.")
         except Exception as e:
             logger.error(f"Failed to restore reminders: {e}")
