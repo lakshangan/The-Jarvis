@@ -23,6 +23,7 @@
 - **Persistent Job Queue**: Reminders are saved to disk and re-scheduled automatically if the bot restarts.
 - **System Telemetry**: Real-time hardware monitoring via `/terminal` (CPU Load, RAM usage, and active tasks).
 - **Status Protocol**: View all active alerts and countdowns via `/status`.
+- **Zero-Latency (Keep-Alive)**: Built-in self-pinging mechanism to prevent "cold starts" on free hosting tiers (like Render Free).
 
 ---
 
@@ -78,3 +79,9 @@ Optimized for **Render.com** (Worker service) or **Docker**.
 1. Connect GitHub.
 2. The `render.yaml` and `Dockerfile` are pre-configured for automated builds.
 3. Ensure `ADMIN_CHAT_ID` is set to receive critical system alerts.
+
+### ⚡ Performance Note (Render Free Tier)
+To ensure the bot responds instantly after long breaks:
+1. Copy your public Render URL (e.g., `https://bot-name.onrender.com`).
+2. Add an environment variable `KEEP_ALIVE_URL` with that link.
+3. J.A.R.V.I.S. will then automatically ping itself every 10 minutes to stay awake.
