@@ -299,6 +299,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "set_groq":
         user_providers[chat_id] = "groq"
         await query.edit_message_text("Switched to Groq (Llama 3.3).")
+    elif query.data.startswith("del_rem_") or query.data == "clear_all_reminders":
+        await delete_reminder_callback(update, context)
 
 async def terminal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = update.effective_user.first_name or "Lakshan"
@@ -330,20 +332,63 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reminders = json.load(f)
     
     user_reminders = [r for r in reminders if r["chat_id"] == chat_id]
+    user_reminders = [r for r in user_reminders if datetime.fromisoformat(r["eta"]) > datetime.now()]
     
     if not user_reminders:
         await update.message.reply_text("No active protocols (reminders) found, Sir.")
         return
         
-    text = "Current Protocols:\n\n"
+    keyboard = []
+    text = "🛰️ **ACTIVE REMINDER PROTOCOLS**\n\n"
+    
     for i, r in enumerate(user_reminders, 1):
         eta = datetime.fromisoformat(r["eta"])
         remaining = eta - datetime.now()
-        if remaining.total_seconds() > 0:
-            time_left = str(remaining).split(".")[0]
-            text += f"{i}. {r['text']} (ETA: {time_left})\n"
+        time_left = str(remaining).split(".")[0]
+        text += f"{i}. `{r['text']}`\n   ⏳ ETA: {time_left}\n\n"
+        keyboard.append([InlineKeyboardButton(f"❌ Cancel {i}", callback_data=f"del_rem_{r['job_name']}")])
+    
+    keyboard.append([InlineKeyboardButton("🗑️ Clear All Reminders", callback_data="clear_all_reminders")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+
+async def delete_reminder_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    chat_id = query.message.chat_id
+
+    if data == "clear_all_reminders":
+        # Clear all for this user
+        if os.path.exists(REMINDERS_FILE):
+            with open(REMINDERS_FILE, "r") as f:
+                reminders = json.load(f)
             
-    await update.message.reply_text(text)
+            # Find jobs to cancel
+            for r in reminders:
+                if r["chat_id"] == chat_id:
+                    jobs = context.job_queue.get_jobs_by_name(r["job_name"])
+                    for j in jobs: j.schedule_removal()
+            
+            # Update file
+            reminders = [r for r in reminders if r["chat_id"] != chat_id]
+            with open(REMINDERS_FILE, "w") as f:
+                json.dump(reminders, f)
+            
+            await query.edit_message_text("All pending reminders have been purged, Sir.")
+        return
+
+    if data.startswith("del_rem_"):
+        job_name = data.replace("del_rem_", "")
+        
+        # Cancel job
+        jobs = context.job_queue.get_jobs_by_name(job_name)
+        for j in jobs: j.schedule_removal()
+        
+        # Remove from file
+        clean_reminder(job_name)
+        
+        await query.edit_message_text(f"Protocol '{job_name}' terminated successfully.")
 
 async def brief_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     date = datetime.now().strftime("%A, %b %d")
