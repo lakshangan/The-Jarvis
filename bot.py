@@ -396,11 +396,10 @@ async def brief_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     provider = get_provider(update.effective_chat.id)
     await update.message.reply_text(
         f"Briefing: {date}\n\n"
-        f"* Status: All systems green\n"
-        f"* Core: {provider.capitalize()}\n"
-        f"* Inbox: 0 pending alerts\n\n"
-        "How can I assist your workflow, Lakshan?",
-        parse_mode="Markdown",
+        f"• Status: All systems green\n"
+        f"• Core: {provider.capitalize()}\n"
+        f"• Inbox: 0 pending alerts\n\n"
+        "How can I assist your workflow, Lakshan?"
     )
 
 async def code_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -440,9 +439,15 @@ async def remind_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     time_str = args[0].lower()
     reminder_text = " ".join(args[1:])
-    await schedule_reminder(chat_id, time_str, reminder_text, context)
+    await schedule_reminder(chat_id, time_str, reminder_text, context, update)
 
-async def schedule_reminder(chat_id, time_str, reminder_text, context):
+async def schedule_reminder(chat_id, time_str, reminder_text, context, update=None):
+    if not context.job_queue:
+        msg = "Error: Job Queue is not initialized. Please ensure APScheduler is installed."
+        if update: await update.message.reply_text(msg)
+        else: await context.bot.send_message(chat_id=chat_id, text=msg)
+        return
+
     try:
         seconds = parse_time(time_str)
         job_name = f"remind_{chat_id}_{random.randint(1000, 9999)}"
@@ -452,8 +457,8 @@ async def schedule_reminder(chat_id, time_str, reminder_text, context):
         save_reminder(chat_id, time_str, reminder_text, job_name)
         
         msg = f"Protocol accepted. I will remind you about '{reminder_text}' in {time_str}."
-        if hasattr(context, "update") and context.update.message:
-            await context.update.message.reply_text(msg)
+        if update and update.message:
+            await update.message.reply_text(msg)
         else:
             await context.bot.send_message(chat_id=chat_id, text=msg)
             
@@ -511,11 +516,13 @@ def clean_reminder(job_name):
 async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
     clean_reminder(job.name)
-    await context.bot.send_message(
-        chat_id=job.chat_id, 
-        text=f"⚠️ **PRIORITY ALERT: REMINDER**\n\nSir, you asked me to remind you:\n\"{job.data}\"", 
-        parse_mode="Markdown"
-    )
+    try:
+        await context.bot.send_message(
+            chat_id=job.chat_id, 
+            text=f"⚠️ PRIORITY ALERT: REMINDER\n\nSir, you asked me to remind you:\n\"{job.data}\""
+        )
+    except Exception as e:
+        logger.error(f"Failed to send reminder: {e}")
 
 async def id_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -552,8 +559,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Handle Special Commands from AI
     if reply.startswith("CMD:REMIND|"):
-        _, time_str, text = reply.split("|")
-        await schedule_reminder(chat_id, time_str, text, context)
+        parts = reply.split("|")
+        if len(parts) >= 3:
+            time_str, text = parts[1], "|".join(parts[2:])
+            await schedule_reminder(chat_id, time_str, text, context, update)
         return
 
     # Split long messages and handle Markdown errors
@@ -593,10 +602,12 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply = await ask_ai(chat_id, f"[VOICE TRANSCRIPT: {transcription}]")
         
         if reply.startswith("CMD:REMIND|"):
-            _, time_str, text = reply.split("|")
-            await schedule_reminder(chat_id, time_str, text, context)
+            parts = reply.split("|")
+            if len(parts) >= 3:
+                time_str, text = parts[1], "|".join(parts[2:])
+                await schedule_reminder(chat_id, time_str, text, context, update)
         else:
-            await update.message.reply_text(reply, parse_mode="Markdown")
+            await update.message.reply_text(reply)
             
     except Exception as e:
         logger.error(f"Voice error: {e}")
