@@ -92,6 +92,7 @@ Communication Rules:
 9. **Reminder Tool**: You can set reminders. If Lakshan asks to be reminded of something, output exactly: `[REMIND: time_delay | message]`. The `time_delay` MUST be a relative duration like '5m', '1h', '10s', or '2d'. 
 10. **Web Reader**: You can read websites. If Lakshan provides a URL, you can ask to read it by outputting: `[READ: url]`.
 11. **Vision/Voice/Docs**: You can analyze images, listen to voice notes, and read uploaded documents (I will provide the transcription/description/content).
+12. **Commands**: You have these protocols: /start (reset), /model (switch AI), /brief (status), /terminal (stats), /code (challenge), /remind (set alert), /status (manage alerts), /id (get ID), /clear (wipe memory), /help (guide).
 
 Goal: Feel like a sharp, helpful human conversation. Address Lakshan with respect but as a partner. Today's date is """ + datetime.now().strftime("%A, %B %d, %Y") + "."
 
@@ -412,20 +413,22 @@ async def code_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Coding Challenge:\n\n{random.choice(challenges)}", parse_mode="Markdown")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Available Protocols:\n\n"
-        "/start - Reset system\n"
-        "/model - Switch core engine\n"
-        "/brief - Mission briefing\n"
-        "/terminal - System shell\n"
-        "/code - Random challenge\n"
-        "/remind - Set reminder (e.g. /remind 10m Coffee)\n"
-        "/status - View active reminders\n"
-        "/clear - Wipe memory\n"
-        "/id    - Get your Chat ID\n"
-        "/help  - Help guide",
-        parse_mode="Markdown",
+    help_text = (
+        "🦾 **J.A.R.V.I.S. PROTOCOLS**\n\n"
+        "Sir, here are the available command protocols and their functions:\n\n"
+        "🔹 `/start` - **System Init**: Resets the neural link and re-initializes the greeting sequence.\n"
+        "🔹 `/model` - **Engine Swap**: Toggle between Claude 3.5 (Logic/Vision) and Groq (Speed).\n"
+        "🔹 `/brief` - **Mission Briefing**: Get a quick status report on all systems and pending alerts.\n"
+        "🔹 `/terminal` - **System Stats**: View live telemetry (CPU, RAM, Tasks, and System info).\n"
+        "🔹 `/code` - **Logic Duel**: Generates a random coding challenge to sharpen your skills.\n"
+        "🔹 `/remind` - **Neural Alert**: Schedule a reminder (e.g., `/remind 10m meeting`). You can also just talk to me!\n"
+        "🔹 `/status` - **Alert Manager**: View and manage all active persistent reminders with interactive controls.\n"
+        "🔹 `/id` - **Identity Scan**: Retrieves your unique Telegram Chat ID.\n"
+        "🔹 `/clear` - **Memory Wipe**: Purges the current conversation buffer for a fresh start.\n"
+        "🔹 `/help` - **Protocol Guide**: Displays this detailed manual.\n\n"
+        "💡 **Pro-Tip**: You can also send me **Voice Notes**, **Photos**, **Documents**, or **Links** for instant analysis."
     )
+    await update.message.reply_text(help_text, parse_mode="Markdown")
 
 async def remind_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
