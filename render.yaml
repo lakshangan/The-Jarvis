@@ -1,13 +1,15 @@
 services:
-  - type: worker
+  - type: web
     name: telegram-ai-agent
     runtime: python
     buildCommand: pip3 install -r requirements.txt
     startCommand: python3 bot.py
     envVars:
       - key: TELEGRAM_BOT_TOKEN
-        sync: false        # You'll paste this in the Render dashboard
+        sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
       - key: GROQ_API_KEY
+        sync: false
+      - key: KEEP_ALIVE_URL
         sync: false

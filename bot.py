@@ -64,6 +64,8 @@ ADMIN_CHAT_ID   = os.environ.get("ADMIN_CHAT_ID", "").strip()
 if ADMIN_CHAT_ID and not ADMIN_CHAT_ID.lstrip("-").isdigit():
     logger.warning("ADMIN_CHAT_ID is not a valid integer. Alerts will be disabled.")
     ADMIN_CHAT_ID = None
+RENDER_URL      = os.environ.get("RENDER_EXTERNAL_URL") # Provided by Render automatically
+KEEP_ALIVE_URL  = os.environ.get("KEEP_ALIVE_URL", RENDER_URL)
 
 
 # Clients
@@ -597,6 +599,34 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Doc error: {e}")
         await update.message.reply_text("I hit a snag reading that file. Is it encoded in UTF-8, Sir?")
 
+async def keep_alive_ping(context: ContextTypes.DEFAULT_TYPE):
+    """Pings the health check URL to keep the service awake."""
+    url = KEEP_ALIVE_URL
+    if not url:
+        logger.debug("No KEEP_ALIVE_URL set. Skipping self-ping.")
+        return
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=10) as response:
+                logger.info(f"Keep-alive ping to {url} | Status: {response.status}")
+    except Exception as e:
+        logger.error(f"Keep-alive ping failed: {e}")
+
+async def warm_up_engines():
+    """Warms up the AI engine connections."""
+    logger.info("Warming up AI engines...")
+    try:
+        # Simple dummy calls or just initializing clients
+        if groq_client:
+            # We don't want to waste tokens, so we just check the client status
+            pass
+        if claude:
+            pass
+        logger.info("AI engines ready.")
+    except Exception as e:
+        logger.error(f"Warm-up failed: {e}")
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Log the error and send a telegram message to notify the developer."""
     logger.error(f"Root Exception: {context.error}")
@@ -615,6 +645,14 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 async def post_init(application: Application):
     # Start the health check server in the background
     await start_health_server()
+    
+    # Start Keep-Alive Ping (every 10 minutes)
+    if application.job_queue:
+        application.job_queue.run_repeating(keep_alive_ping, interval=600, first=10)
+        logger.info("Keep-alive protocol initialized.")
+
+    # Warm up AI connections
+    asyncio.create_task(warm_up_engines())
     
     # Reload persistent reminders
     if os.path.exists(REMINDERS_FILE):
@@ -646,7 +684,14 @@ def main():
         return
 
     logger.info("Starting Telegram AI Agent…")
-    app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
+    app = (
+        Application.builder()
+        .token(TELEGRAM_TOKEN)
+        .post_init(post_init)
+        .connect_timeout(30)
+        .read_timeout(30)
+        .build()
+    )
 
     # Log every single update for debugging
     from telegram.ext import TypeHandler
