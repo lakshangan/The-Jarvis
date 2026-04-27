@@ -11,7 +11,13 @@ from telegram.ext import (
     filters,
     ContextTypes,
     CallbackQueryHandler,
+    TypeHandler,
 )
+try:
+    from telegram.ext import JobQueue
+    HAS_JOB_QUEUE = True
+except ImportError:
+    HAS_JOB_QUEUE = False
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import json
@@ -778,14 +784,16 @@ def main():
         return
 
     logger.info("Starting Telegram AI Agent…")
-    app = (
-        Application.builder()
-        .token(TELEGRAM_TOKEN)
-        .post_init(post_init)
-        .connect_timeout(30)
-        .read_timeout(30)
-        .build()
-    )
+    
+    builder = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init)
+    
+    if HAS_JOB_QUEUE:
+        builder.job_queue(JobQueue())
+        logger.info("Job Queue requested.")
+    else:
+        logger.warning("Job Queue dependencies missing! Reminders will not work.")
+
+    app = builder.connect_timeout(30).read_timeout(30).build()
 
     # Log every single update for debugging
     from telegram.ext import TypeHandler
