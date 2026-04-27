@@ -73,6 +73,16 @@ if ADMIN_CHAT_ID and not ADMIN_CHAT_ID.lstrip("-").isdigit():
 RENDER_URL      = os.environ.get("RENDER_EXTERNAL_URL") # Provided by Render automatically
 KEEP_ALIVE_URL  = os.environ.get("KEEP_ALIVE_URL", RENDER_URL)
 
+# Stats Tracking
+groq_stats = {
+    "remaining_tokens": 0,
+    "limit_tokens": 0,
+    "remaining_requests": 0,
+    "limit_requests": 0,
+    "reset_tokens": "0s",
+    "reset_requests": "0s"
+}
+
 
 # Clients
 claude = anthropic.AsyncAnthropic(api_key=ANTHROPIC_KEY) if ANTHROPIC_KEY else None
@@ -208,12 +218,24 @@ async def ask_ai(chat_id: int, user_text: str, image_data: bytes = None, documen
             if provider == "groq":
                 if not groq_client: return "Groq API key not configured."
                 # Groq doesn't support vision in llama3-70b yet, so we use text
-                response = await groq_client.chat.completions.create(
+                # We use raw response to get headers
+                response = await groq_client.chat.completions.with_raw_response.create(
                     model="llama-3.3-70b-versatile",
                     messages=[{"role": "system", "content": SYSTEM_PROMPT}] + history,
                     max_tokens=2048,
                 )
-                reply = response.choices[0].message.content
+                
+                # Update stats from headers
+                h = response.headers
+                groq_stats["remaining_tokens"] = int(h.get("x-ratelimit-remaining-tokens", 0))
+                groq_stats["limit_tokens"] = int(h.get("x-ratelimit-limit-tokens", 0))
+                groq_stats["remaining_requests"] = int(h.get("x-ratelimit-remaining-requests", 0))
+                groq_stats["limit_requests"] = int(h.get("x-ratelimit-limit-requests", 0))
+                groq_stats["reset_tokens"] = h.get("x-ratelimit-reset-tokens", "0s")
+                groq_stats["reset_requests"] = h.get("x-ratelimit-reset-requests", "0s")
+                
+                completion = response.parse()
+                reply = completion.choices[0].message.content
             else:
                 if not claude: return "Claude API key not configured."
                 
@@ -436,6 +458,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔹 `/code` - **Logic Duel**: Generates a random coding challenge to sharpen your skills.\n"
         "🔹 `/remind` - **Neural Alert**: Schedule a reminder (e.g., `/remind 10m meeting`). You can also just talk to me!\n"
         "🔹 `/status` - **Alert Manager**: View and manage all active persistent reminders with interactive controls.\n"
+        "🔹 `/usage` - **Quota Scan**: View real-time Groq API usage and remaining chat capacity.\n"
         "🔹 `/id` - **Identity Scan**: Retrieves your unique Telegram Chat ID.\n"
         "🔹 `/clear` - **Memory Wipe**: Purges the current conversation buffer for a fresh start.\n"
         "🔹 `/help` - **Protocol Guide**: Displays this detailed manual.\n\n"
@@ -545,6 +568,33 @@ async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         logger.error(f"Failed to send reminder: {e}")
+
+async def usage_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Shows Groq API usage and remaining limits."""
+    if not groq_stats["limit_tokens"]:
+        await update.message.reply_text("Sir, no Groq traffic has been recorded yet. Send a message first to initialize the telemetry.")
+        return
+
+    tokens_pct = (groq_stats["remaining_tokens"] / groq_stats["limit_tokens"]) * 100
+    reqs_pct = (groq_stats["remaining_requests"] / groq_stats["limit_requests"]) * 100
+    
+    # Progress bars
+    def get_bar(pct):
+        filled = int(pct / 10)
+        return "▰" * filled + "▱" * (10 - filled)
+
+    msg = (
+        "📊 **GROQ RESOURCE USAGE**\n\n"
+        f"🔹 **Tokens**: {groq_stats['remaining_tokens']:,} / {groq_stats['limit_tokens']:,}\n"
+        f"`{get_bar(tokens_pct)}` ({tokens_pct:.1f}%)\n"
+        f"⏳ Reset in: {groq_stats['reset_tokens']}\n\n"
+        f"🔹 **Requests**: {groq_stats['remaining_requests']} / {groq_stats['limit_requests']}\n"
+        f"`{get_bar(reqs_pct)}` ({reqs_pct:.1f}%)\n"
+        f"⏳ Reset in: {groq_stats['reset_requests']}\n\n"
+        "💡 **Projection**: Based on current limits, you have enough capacity for approximately "
+        f"{int(groq_stats['remaining_tokens'] / 500)} more standard messages before the next reset."
+    )
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def id_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -806,7 +856,8 @@ def main():
     app.add_handler(CommandHandler("code", code_command))
     app.add_handler(CommandHandler("remind", remind_command))
     app.add_handler(CommandHandler("status", status_command))
-    app.add_handler(CommandHandler("help",  help_command))
+    app.add_handler(CommandHandler("usage",  usage_command))
+    app.add_handler(CommandHandler("help",   help_command))
     app.add_handler(CommandHandler("id", id_command))
     app.add_handler(CommandHandler(["clear", "reset"], clear_command))
     app.add_handler(CallbackQueryHandler(button_callback))
