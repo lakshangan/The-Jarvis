@@ -234,7 +234,7 @@ async def ask_ai(chat_id: int, user_text: str, image_data: bytes = None, documen
                 groq_stats["reset_tokens"] = h.get("x-ratelimit-reset-tokens", "0s")
                 groq_stats["reset_requests"] = h.get("x-ratelimit-reset-requests", "0s")
                 
-                completion = response.parse()
+                completion = await response.parse()
                 reply = completion.choices[0].message.content
             else:
                 if not claude: return "Claude API key not configured."
