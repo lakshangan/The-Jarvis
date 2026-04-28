@@ -688,7 +688,20 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         if reply.startswith("CMD:REMIND|"):
-            
+            parts = reply.split("|")
+            if len(parts) >= 3:
+                time_str, text = parts[1], "|".join(parts[2:])
+                await schedule_reminder(chat_id, time_str, text, context, update)
+            return
+
+        # Send the AI reply for normal voice responses
+        chunks = [reply[i:i+4096] for i in range(0, len(reply), 4096)]
+        for chunk in chunks:
+            try:
+                await update.message.reply_text(chunk, parse_mode="Markdown")
+            except Exception:
+                await update.message.reply_text(chunk)
+
     except Exception as e:
         logger.error(f"Voice error: {e}")
         await update.message.reply_text("Sorry Sir, I couldn't process that audio.")
