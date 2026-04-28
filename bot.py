@@ -756,12 +756,17 @@ async def warm_up_engines():
     """Warms up the AI engine connections."""
     logger.info("Warming up AI engines...")
     try:
-        # Simple dummy calls or just initializing clients
+        # Establish connection pools by making minimal API requests
         if groq_client:
-            # We don't want to waste tokens, so we just check the client status
-            pass
+            await groq_client.models.list()
+            logger.info("Groq engine connections established.")
         if claude:
-            pass
+            await claude.messages.create(
+                model="claude-3-haiku-20240307",
+                max_tokens=1,
+                messages=[{"role": "user", "content": "ping"}]
+            )
+            logger.info("Claude engine connections established.")
         logger.info("AI engines ready.")
     except Exception as e:
         logger.error(f"Warm-up failed: {e}")
